@@ -1,0 +1,7 @@
+__pycache__
+.DS_Store
+
+runs.json
+ssh_connect.sh
+openfhe-python/
+approx_coeffs/
