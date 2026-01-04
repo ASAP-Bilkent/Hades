@@ -5,29 +5,117 @@ class CKKSContext:
     def __init__(self, n_clients):
         is_multiparty = n_clients > 1
         utils.vprint("is_multiparty: ", is_multiparty)
+        self.n_clients = n_clients
         self.cc, self.depth = self._setup_self(is_multiparty)
         if is_multiparty:
-            parties = [Party()]*n_clients
+            self.parties = []
+            kp_prev = None
+            
             for i in range(n_clients):
-                parties[i].id = i
                 if i == 0:
-                    parties[i].kpShard = self.cc.KeyGen()
+                    kp = self.cc.KeyGen()
                 else:
-                    parties[i].kpShard = self.cc.MultipartyKeyGen(parties[0].kpShard.publicKey)
-            for i in range(n_clients):
-                if not parties[i].kpShard.good():
+                    kp = self.cc.MultipartyKeyGen(kp_prev.publicKey)
+                
+                if not kp.good():
                     print(f"Key generation failed for party {i}!\n")
                     return 1
-
-            # Generate collective public key
+                
+                self.parties.append(kp)
+                kp_prev = kp
+            
             secretKeys = []
             for i in range(n_clients):
-                secretKeys.append(parties[i].kpShard.secretKey)
+                secretKeys.append(self.parties[i].secretKey)
             self.keys = self.cc.MultipartyKeyGen(secretKeys)
+            
+            if not self.keys.good():
+                print(f"Collective key generation failed!\n")
+                return 1
+            
+            self._setup_multiparty_eval_keys()
         else:
             self.keys = self.cc.KeyGen()
-        self.cc.EvalMultKeyGen(self.keys.secretKey)
-        self.cc.EvalRotateKeyGen(self.keys.secretKey, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048])
+            self.cc.EvalMultKeyGen(self.keys.secretKey)
+            self.cc.EvalRotateKeyGen(self.keys.secretKey, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048])
+            self.cc.EvalBootstrapKeyGen(self.keys.secretKey, self.cc.GetRingDimension() // 2)
+    
+    def _setup_multiparty_eval_keys(self):
+        n = self.n_clients
+        
+        evalMultKeys = []
+        evalMultKeys.append(self.cc.KeySwitchGen(self.parties[0].secretKey, self.parties[0].secretKey))
+        
+        for i in range(1, n):
+            evalMultKeys.append(self.cc.MultiKeySwitchGen(
+                self.parties[i].secretKey, 
+                self.parties[i].secretKey, 
+                evalMultKeys[0]
+            ))
+        
+        evalMultAccum = evalMultKeys[0]
+        for i in range(1, n):
+            evalMultAccum = self.cc.MultiAddEvalKeys(
+                evalMultAccum, 
+                evalMultKeys[i], 
+                self.keys.publicKey.GetKeyTag()
+            )
+        
+        evalMultTransformed = []
+        for i in range(n):
+            evalMultTransformed.append(self.cc.MultiMultEvalKey(
+                self.parties[i].secretKey,
+                evalMultAccum,
+                self.keys.publicKey.GetKeyTag()
+            ))
+        
+        evalMultFinal = evalMultTransformed[0]
+        for i in range(1, n):
+            evalMultFinal = self.cc.MultiAddEvalMultKeys(
+                evalMultFinal,
+                evalMultTransformed[i],
+                self.keys.publicKey.GetKeyTag()
+            )
+        
+        self.cc.InsertEvalMultKey([evalMultFinal])
+        
+        rot_steps = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+        rot_all = rot_steps + ([-s for s in rot_steps])
+        self.cc.EvalSumKeyGen(self.parties[0].secretKey)
+        evalSumKeys = self.cc.GetEvalSumKeyMap(self.parties[0].secretKey.GetKeyTag())
+        
+        for i in range(1, n):
+            evalSumKeysParty = self.cc.MultiEvalSumKeyGen(
+                self.parties[i].secretKey,
+                evalSumKeys,
+                self.keys.publicKey.GetKeyTag()
+            )
+            evalSumKeys = self.cc.MultiAddEvalSumKeys(
+                evalSumKeys,
+                evalSumKeysParty,
+                self.keys.publicKey.GetKeyTag()
+            )
+        
+        self.cc.InsertEvalSumKey(evalSumKeys)
+        
+        self.cc.EvalRotateKeyGen(self.parties[0].secretKey, rot_all)
+        evalRotateKeys = self.cc.GetEvalAutomorphismKeyMap(self.parties[0].secretKey.GetKeyTag())
+        
+        for i in range(1, n):
+            evalRotateKeysParty = self.cc.MultiEvalAtIndexKeyGen(
+                self.parties[i].secretKey,
+                evalRotateKeys,
+                rot_all,
+                self.keys.publicKey.GetKeyTag()
+            )
+            evalRotateKeys = self.cc.MultiAddEvalAutomorphismKeys(
+                evalRotateKeys,
+                evalRotateKeysParty,
+                self.keys.publicKey.GetKeyTag()
+            )
+        
+        self.cc.InsertEvalAutomorphismKey(evalRotateKeys, "")
+        
         self.cc.EvalBootstrapKeyGen(self.keys.secretKey, self.cc.GetRingDimension() // 2)
 
     def _setup_self(self,is_multiparty):
@@ -50,6 +138,7 @@ class CKKSContext:
         parameters.SetScalingModSize(dcrt_bits)
         parameters.SetScalingTechnique(rescale_tech)
         parameters.SetFirstModSize(first_mod)
+        #parameters.SetKeySwitchTechnique(KeySwitchTechnique.HYBRID)
 
         """
         https://github.com/openfheorg/openfhe-development/blob/main/src/pke/examples/advanced-ckks-bootstrapping.cpp#L116
@@ -77,6 +166,10 @@ class CKKSContext:
         #print(FHECKKSRNS.GetBootstrapDepth(level_budget, secret_key_dist))
 
         parameters.SetMultiplicativeDepth(depth)
+        
+        if is_multiparty:
+            compressionLevel = COMPRESSION_LEVEL.SLACK
+            parameters.SetInteractiveBootCompressionLevel(compressionLevel)
 
         cc = GenCryptoContext(parameters)
         cc.Enable(PKESchemeFeature.PKE)

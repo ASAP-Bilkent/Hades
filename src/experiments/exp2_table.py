@@ -76,7 +76,6 @@ def main():
         'Dataset',
         'CE F_{HE}=0',
         'CE F_{HE}=PARAM',
-        'CE F_{HE}=0, approx.',
         'FL F_{HE}=PARAM',
         'FL F_{HE}=PARAM approx.'
     ]
@@ -87,7 +86,6 @@ def main():
             'Dataset': dataset.upper(),
             'CE F_{HE}=0': None,
             'CE F_{HE}=PARAM': None,
-            'CE F_{HE}=0, approx.': None,
             'FL F_{HE}=PARAM': None,
             'FL F_{HE}=PARAM approx.': None
         }
@@ -100,16 +98,18 @@ def main():
                 continue
             
             acc_test = result['acc_test']
+            has_fusion0 = '--fusion=0' in cmd
+            has_fusion_param = f'--fusion={f_he}' in cmd
+            has_hades_param = f'--hades={f_he}' in cmd
+            has_n_clients_10 = '--n_clients=10' in cmd or has_hades_param
             
-            if '--fusion=0' in cmd and '--act_fun=sigmoid' in cmd and '--n_clients=' not in cmd:
+            if has_fusion0 and '--act_fun=sigmoid' in cmd and '--n_clients=' not in cmd:
                 row['CE F_{HE}=0'] = acc_test * 100
-            elif f'--fusion={f_he}' in cmd and '--act_fun=sigmoid' in cmd and '--n_clients=' not in cmd:
+            elif has_fusion_param and '--act_fun=sigmoid' in cmd and '--n_clients=' not in cmd:
                 row['CE F_{HE}=PARAM'] = acc_test * 100
-            elif '--fusion=0' in cmd and '--act_fun=approx_sigmoid' in cmd and '--n_clients=' not in cmd:
-                row['CE F_{HE}=0, approx.'] = acc_test * 100
-            elif f'--fusion={f_he}' in cmd and '--act_fun=sigmoid' in cmd and '--n_clients=10' in cmd:
+            elif has_fusion_param and '--act_fun=sigmoid' in cmd and has_n_clients_10:
                 row['FL F_{HE}=PARAM'] = acc_test * 100
-            elif f'--fusion={f_he}' in cmd and '--act_fun=approx_sigmoid' in cmd and '--n_clients=10' in cmd:
+            elif (has_fusion_param or has_hades_param) and '--act_fun=approx_sigmoid' in cmd and has_n_clients_10:
                 row['FL F_{HE}=PARAM approx.'] = acc_test * 100
         
         data.append(row)
@@ -122,16 +122,26 @@ def main():
 
     df = df.drop(columns=['F_{HE}_PARAM'])
 
+    f_he_values = []
+    dataset_order = []
+    for dataset in df.index:
+        dataset_lower = dataset.lower()
+        if dataset_lower in fusion_params:
+            f_he_values.append(fusion_params[dataset_lower])
+            dataset_order.append(dataset)
+    
+    f_he_str = ', '.join(f_he_values)
+    
     latex_lines = []
-    latex_lines.append('\\begin{table}[h!]')
-    latex_lines.append('\\caption{Test accuracies (\\%) for centralized (CE) and federated (FL) training, comparing $|\\mathcal{F}_{HE}|$ and sigmoid approximation.}')
+    latex_lines.append('\\begin{table}[ht!]')
+    latex_lines.append(f'\\caption{{Test accuracies (\\%) for centralized (CE) and federated (FL) training, comparing $\\mathcal{{F}}_{{HE}}$ and sigmoid approximation.  $\\mathcal{{F}}_{{HE}} = 0$ means all data is processed with a fully plaintext model. Bold $\\boldsymbol{{\\mathcal{{F}}_{{HE}}}}$ denotes that a model portion is trained under encryption, and we set $|\\mathcal{{F}}_{{HE}}|=[{f_he_str}]$ for {", ".join(dataset_order)}, respectively.}}')
     latex_lines.append('\\label{tab:exp2_results}')
-    latex_lines.append('\\resizebox{\\columnwidth}{!}{')
-    latex_lines.append('\\begin{tabular}{lccccc}')
+    latex_lines.append('\\small')
+    latex_lines.append('\\begin{tabular}{lcccc}')
     latex_lines.append('\\toprule')
 
-    header = ['Dataset', 'CE $F_{HE}=0$', 'CE $F_{HE}=$ GIVEN', 'CE $F_{HE}=0$, approx.', 
-              'FL $F_{HE}=$ GIVEN', 'FL $F_{HE}=$ GIVEN approx.']
+    header = ['Dataset', 'CE- $\\mathcal{F}_{HE}=0$', 'CE- $\\boldsymbol{\\mathcal{F}_{HE}}$',
+              'FL- $\\boldsymbol{\\mathcal{F}_{HE}}$', 'FL- $\\boldsymbol{\\mathcal{F}_{HE}}$ approx. (\\sys)']
     latex_lines.append(' & '.join(header) + ' \\\\')
     latex_lines.append('\\midrule')
 
@@ -150,7 +160,6 @@ def main():
 
     latex_lines.append('\\bottomrule')
     latex_lines.append('\\end{tabular}')
-    latex_lines.append('}')
     latex_lines.append('\\end{table}')
 
     latex_table = '\n'.join(latex_lines)
@@ -171,7 +180,7 @@ def main():
     generate_parameters_table(project_root, selected_file, param_by_dataset)
 
 def extract_parameters(results):
-    """Extract parameters from the results JSON for each dataset"""
+    
     param_by_dataset = defaultdict(lambda: defaultdict(dict))
     
     for result in results:
@@ -188,16 +197,25 @@ def extract_parameters(results):
             param_by_dataset[dataset]['dims'] = dims_match.group(1)
         
         fusion_match = re.search(r'--fusion=(\d+)', cmd)
+        hades_match = re.search(r'--hades=(\d+)', cmd)
+        fusion_val = None
         if fusion_match and fusion_match.group(1) != '0':
-            param_by_dataset[dataset]['fusion'] = fusion_match.group(1)
+            fusion_val = fusion_match.group(1)
+        elif hades_match:
+            fusion_val = hades_match.group(1)
+        if fusion_val is not None:
+            param_by_dataset[dataset]['fusion'] = fusion_val
         
-        lr_match = re.search(r'--learning_rate=(\d+\.\d+)', cmd)
+        lr_match = re.search(r'--lrate=(\d+\.\d+)', cmd)
         if lr_match:
-            param_by_dataset[dataset]['learning_rate'] = lr_match.group(1)
+            param_by_dataset[dataset]['lrate'] = lr_match.group(1)
         
         clients_match = re.search(r'--n_clients=(\d+)', cmd)
         if clients_match:
             param_by_dataset[dataset]['n_clients'] = clients_match.group(1)
+        elif hades_match:
+
+            param_by_dataset[dataset]['n_clients'] = '10'
             
         epochs_match = re.search(r'--epoch(?:s)?=(\d+)', cmd)
         if epochs_match:
@@ -208,7 +226,7 @@ def extract_parameters(results):
         result_dict[dataset] = {
             'dims': params.get('dims', 'N/A'),
             'fusion': params.get('fusion', '0'),
-            'learning_rate': params.get('learning_rate', '0.01'),
+            'lrate': params.get('lrate', '0.01'),
             'n_clients': params.get('n_clients', '10'),
             'epochs': params.get('epochs', '10')
         }
@@ -216,7 +234,7 @@ def extract_parameters(results):
     return result_dict
 
 def generate_parameters_table(project_root, selected_file, param_by_dataset):
-    """Generate a table showing the parameters used for each dataset in experiment 2"""
+    
     
     param_data = []
     
@@ -225,7 +243,7 @@ def generate_parameters_table(project_root, selected_file, param_by_dataset):
             'Dataset': dataset.upper(),
             'Hidden Layer Size': params['dims'],
             'F_{HE}': params['fusion'],
-            'Learning Rate': params['learning_rate'],
+            'Learning Rate': params['lrate'],
             'Number of Clients (FL)': params['n_clients'],
             'Epochs': params['epochs']
         }
@@ -250,7 +268,7 @@ def generate_parameters_table(project_root, selected_file, param_by_dataset):
     
     latex_lines.append('\\toprule')
 
-    header = ['Dataset', 'Hidden Layer Size', '$|\mathcal{F}_{HE}|$', 'Learning Rate', 'Number of Clients (FL)', 'Epochs']
+    header = ['Dataset', 'Hidden Layer Size', r'$|\mathcal{F}_{HE}|$', 'Learning Rate', 'Number of Clients (FL)', 'Epochs']
     latex_lines.append(' & '.join(header) + ' \\\\')
     latex_lines.append('\\midrule')
 
@@ -260,7 +278,7 @@ def generate_parameters_table(project_root, selected_file, param_by_dataset):
         row_values.append(str(param_df.loc[dataset, 'Hidden Layer Size']))
         
 
-        row_values.append(str(param_df.loc[dataset, '|\mathcal{F}_{HE}|']))
+        row_values.append(str(param_df.loc[dataset, 'F_{HE}']))
         
 
         row_values.append(str(param_df.loc[dataset, 'Learning Rate']))

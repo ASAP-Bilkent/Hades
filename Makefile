@@ -14,16 +14,16 @@ help:
 	@echo "  make clean          # Clean temporary files"
 
 train-bco:
-	python3 main.py --dims=4 --batch_size=1 --dataset=bco --learning_rate=0.1 --no_enc --no_idlg --data_amount=-1 --epochs=1 --act_func=sigmoid
+	python3 main.py --dims=4 --batch_size=1 --dataset=bco --lrate=0.1 --data_amount=-1 --epochs=1 --act_func=sigmoid
 
 train-bcd:
-	python3 main.py --dims=16 --batch_size=1 --dataset=bcd --learning_rate=0.1 --no_enc --no_idlg --data_amount=-1 --epochs=1 --act_func=sigmoid
+	python3 main.py --dims=16 --batch_size=1 --dataset=bcd --lrate=0.1 --data_amount=-1 --epochs=1 --act_func=sigmoid
 
 train-mnist:
-	python3 main.py --dims=128,16 --batch_size=1 --dataset=mnist --learning_rate=0.1 --no_enc --no_idlg --data_amount=-1 --epochs=1 --act_func=sigmoid
+	python3 main.py --dims=128,16 --batch_size=1 --dataset=mnist --lrate=0.1 --data_amount=-1 --epochs=1 --act_func=sigmoid
 
 poseidon:
-	python3 main.py --n_synth_features=4 --dims=4 --batch_size=1 --dataset=synth --no_idlg --no_infer --data_amount=1 --epochs=1
+	python3 main.py --n_synth_features=4 --dims=4 --batch_size=1 --dataset=synth --no_infer --data_amount=1 --epochs=1
 
 exp%:
 	python3 main.py --exp=$*
@@ -35,10 +35,10 @@ latex%:
 	python3 src/experiments/exp$*_table.py
 
 latex_pca:
-	python3 src/experiments/pca_exp.py
+	PYTHONPATH=. python3 src/experiments/pca_exp.py
 
 test%:
-	python3 main.py --test=$*
+	python3 main.py --enc --test=$*
 
 test: test1 test2 test3 test4 test5 test6
 

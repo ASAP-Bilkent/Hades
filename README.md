@@ -34,28 +34,48 @@ The script builds the image and launches a container with the Hades workspace.
 You can customize behavior via the following arguments:
 
 **General Parameters**
-- `--verbosity`: Verbosity level (default: 0)
+- `--net_verbosity`: Verbosity of data and network state (default: 1)
+- `--verbosity`: Verbosity level for HadesText (default: 0)
 - `--no_infer`: Disable inference
-- `--no_idlg`: Disable iDLG
-- `--idlg_type`: Type of iDLG attack (`cheat`, `zero`, `rand`) (default: `cheat`)
+- `--idlg`: Enable iDLG
+- `--idlg_type`: Type of iDLG attack (`oracle`, `zero`, `rand`) (default: `oracle`)
 - `--no_test`: Disable evaluation on test set
 - `--pca`: Apply PCA to dataset
+- `--pca_to_feat`: Use PCA to select/sort original features instead of transforming to PCA space
+- `--single_feat_split`: Get first n_components
 - `--exp`: Run a predefined experiment by number
-- `--dataset`: Dataset to use (`bcd`, `bco`, `mnist`, `synth`) (default: `bcd`)
+- `--dataset`: Dataset to use (`bcd`, `mnist`, `synth`, `svhn`) (default: `bcd`)
 - `--data_amount`: Number of data points to train on (-1 for all data)
-- `--n_synth_features`: Features for synthetic dataset
+- `--n_synth_features`: Features for synthetic dataset (default: 32)
 - `--fusion`: Number of elements for fusion
-- `--no_enc`: Run only plaintext model
+- `--enc`: Enable encrypted network
+- `--hades`: Shortcut to enable HE fusion setup with given fusion size
+- `--pca_ablation`: Shortcut for PCA ablation with given fusion size
 - `--n_clients`: Number of FL clients (default: 1)
 - `--fusion_alpha`: Alpha coefficient for loss fusion (default: 0.5)
+- `--loss_enc`: Keeps fused loss encrypted
+- `--recon`: Test reconstruction without top fusion PCA features
+- `--minmax`: Apply MinMax scaling with range (e.g., "0,1" for range [0,1])
+- `--mult_types`: Overriding mult_types for HadesText
 
 **Network Parameters**
-- `--epochs`: Number of training epochs (default: 100)
-- `--learning_rate`: Learning rate (default: 0.1)
+- `--epochs`: Number of training epochs (default: 10, can be fractional)
+- `--lrate`: Learning rate (default: 0.1)
+- `--mom`: Nesterov momentum coefficient (default: 0.0)
 - `--batch_size`: Training batch size (default: 4)
 - `--dims`: Hidden layer dimensions (comma-separated)
-- `--act_func`: Activation function (`relu`, `sigmoid`, `approx_relu`, `approx_sigmoid`)
+- `--act_func`: Activation function (`sigmoid`, `approx_sigmoid`, `approx_sigmoid_ls`, `approx_relu`, `none`, `relu`)
+- `--fus_act_real`: Use non-approx version for network_one in fusion networks
+- `--approx_params`: Approximation parameters in format 'degree-range' (default: "3-5")
+- `--horner`: Use Horner's method for polynomial evaluation
+- `--verbose_grad`: Print aggregated gradient stats every iteration
+- `--verbose_act_inp`: Print activation inputs per layer
 - `--output_file`: Output JSON filename prefix (default: `runs`)
+
+**Testing Parameters**
+- `--test`: Run HE tests
+- `--testing`: Passed automatically when running HE tests
+- `--test_all`: Run select network type tests
 
 ---
 
@@ -64,9 +84,10 @@ You can customize behavior via the following arguments:
 To streamline common tasks, use the following commands:
 
 ```bash
-make train-bco       # Train on Breast Cancer Original dataset
 make train-bcd       # Train on Breast Cancer Diagnostic dataset
 make train-mnist     # Train on MNIST dataset
+make train-synth     # Train on Synthetic dataset
+make train-svhn      # Train on SVHN dataset
 make exp<N>          # Run experiment N (e.g. make exp1)
 make latex<N>        # Generate LaTeX table for experiment N (e.g. make latex1)
 make latex<N>_graph  # Generate LaTeX graph for experiment N (e.g. make latex1_graph)

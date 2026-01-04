@@ -10,7 +10,7 @@ from datetime import datetime
 from collections import defaultdict
 
 def parse_cli_args(cmd):
-    """Extract parameters from command string"""
+    
     params = {}
     
     dataset_match = re.search(r'--dataset=([a-zA-Z0-9]+)', cmd)
@@ -30,7 +30,7 @@ def parse_cli_args(cmd):
     return params
 
 def extract_timestamp(filename):
-    """Extract timestamp from filename"""
+    
     match = re.search(r'exp\d+-(\d{10,12})\.json$', os.path.basename(filename))
     if match:
         timestamp_str = match.group(1)
@@ -42,7 +42,7 @@ def extract_timestamp(filename):
     return datetime.fromtimestamp(os.path.getmtime(filename))
 
 def format_filename(file_path):
-    """Format the filename for display"""
+    
     filename = os.path.basename(file_path)
     match = re.search(r'(exp\d+)-(\d{2})(\d{2})(\d{4})(\d{2})(\d{2})\.json$', filename)
     if match:
@@ -51,14 +51,14 @@ def format_filename(file_path):
     return filename
 
 def load_and_organize_data(json_path):
-    """Load the results JSON file and organize data by dataset, idlg_type, and fusion"""
+    
     with open(json_path, 'r') as f:
         runs = json.load(f)
     
     organized_data = defaultdict(lambda: defaultdict(dict))
     
     for run in runs:
-        if 'fidelity_easy_test' not in run or 'fidelity_hard_test' not in run:
+        if 'fidelity_easy_train' not in run or 'fidelity_hard_train' not in run:
             continue
         
         params = parse_cli_args(run['cli_command'])
@@ -70,81 +70,99 @@ def load_and_organize_data(json_path):
         fusion = params['fusion']
         
         organized_data[dataset][idlg_type][fusion] = {
-            'fidelity_easy': run['fidelity_easy_test'],
-            'fidelity_hard': run['fidelity_hard_test']
+            'fidelity_easy': run['fidelity_easy_train'],
+            'fidelity_hard': run['fidelity_hard_train']
         }
     
     return organized_data
 
 def generate_latex_table(organized_data):
-    """Generate a LaTeX table from the organized data"""
+    
     dataset_names = {
-        'bcd': 'Breast Cancer Diagnostic',
-        'bco': 'Breast Cancer Original'
+        'bcd': 'Breast Cancer Diagnostic (BCD)',
+        'mnist': 'MNIST',
+        'svhn': 'SVHN'
     }
     
-    datasets = sorted(organized_data.keys())
+    fusion_values = [0, 8, 16, 64, 128, 256]
+    idlg_types = ['oracle', 'zero', 'rand']
+    idlg_display = {
+        'oracle': '\\textbf{Oracle}',
+        'zero': '\\textbf{Zero}',
+        'rand': '\\textbf{Random}'
+    }
+    thresholds = [
+        ('fidelity_easy', 0.01),
+        ('fidelity_hard', 0.0001)
+    ]
+    
+    datasets = ['bcd', 'mnist', 'svhn']
     
     latex_content = []
-    latex_content.append("\\begin{table}[htbp]")
-    latex_content.append("\\centering")
-    latex_content.append("\\small")
-    latex_content.append("\\resizebox{\\columnwidth}{!}{%")
-    latex_content.append("\\begin{tabular}{|c|c||c|c||c|c||c|c|}")
-    latex_content.append("\\hline")
-    latex_content.append("\\multicolumn{2}{|c||}{\\textbf{Configuration}} & \\multicolumn{6}{c|}{\\textbf{Fidelity Thresholds (\\%)}} \\\\ \\hline")
-    latex_content.append("\\textbf{Dataset} & \\textbf{$|\mathcal{F}_{HE}|$} & \\multicolumn{2}{c||}{\\textbf{Cheat}} & \\multicolumn{2}{c||}{\\textbf{Zero}} & \\multicolumn{2}{c|}{\\textbf{Random}} \\\\ \\hline")
-    latex_content.append(" &  & \\textbf{0.01} & \\textbf{0.0001} & \\textbf{0.01} & \\textbf{0.0001} & \\textbf{0.01} & \\textbf{0.0001} \\\\ \\hline")
+    latex_content.append("\\begin{tabular}{l|c|c|cccccc}")
+    latex_content.append("\\toprule")
+    latex_content.append("\\textbf{Dataset} & \\textbf{Attack Type} & \\textbf{Fidelity Threshold} & ")
+    latex_content.append("\\multicolumn{6}{c}{$\\boldsymbol{|\\mathcal{F}_{HE}|}$} \\\\")
+    latex_content.append("\\cmidrule(lr){4-9}")
+    header_cols = [f"\\textbf{{{f}}}" for f in fusion_values[:-1]] + [f"\\textbf{{{fusion_values[-1]}+}}"]
+    latex_content.append("& & & " + " & ".join(header_cols) + " \\\\")
+    latex_content.append("\\midrule")
     
     for dataset in datasets:
+        if dataset not in organized_data:
+            continue
+            
         dataset_name = dataset_names.get(dataset, dataset.upper())
+        num_rows = len(idlg_types) * len(thresholds)
+        row_count = 0
         
-        fusion_values = set()
-        for idlg_type in organized_data[dataset]:
-            fusion_values.update(organized_data[dataset][idlg_type].keys())
-        fusion_values = sorted(fusion_values)
-        
-        for i, fusion in enumerate(fusion_values):
-            row_parts = []
-            
-            if i == 0:
-                row_parts.append(f"\\multirow{{{len(fusion_values)}}}{{*}}{{{dataset_name}}}")
-            else:
-                row_parts.append("")
-            
-            row_parts.append(str(fusion))
-            
-            for idlg_type in ['cheat', 'zero', 'rand']:
-                if idlg_type in organized_data[dataset] and fusion in organized_data[dataset][idlg_type]:
-                    data = organized_data[dataset][idlg_type][fusion]
-                    row_parts.append(f"{data['fidelity_easy']:.1f}")
-                    row_parts.append(f"{data['fidelity_hard']:.1f}")
+        for idlg_type in idlg_types:
+            for threshold_key, threshold_val in thresholds:
+                row_parts = []
+                
+                if row_count == 0:
+                    row_parts.append(f"\\multirow{{{num_rows}}}{{*}}{{{dataset_name}}}")
                 else:
-                    row_parts.append("-")
-                    row_parts.append("-")
-            
-            if i > 0:
-                latex_content.append("\\cline{2-8}")
-            latex_content.append(" & ".join(row_parts) + " \\\\")
+                    row_parts.append("")
+                
+                if row_count % 2 == 0:
+                    row_parts.append(f"\\multirow{{2}}{{*}}{{{idlg_display[idlg_type]}}}")
+                else:
+                    row_parts.append("")
+                
+                row_parts.append(str(threshold_val))
+                
+                for fusion in fusion_values:
+                    if (idlg_type in organized_data[dataset] and 
+                        fusion in organized_data[dataset][idlg_type]):
+                        data = organized_data[dataset][idlg_type][fusion]
+                        value = data[threshold_key]
+                        if value is not None:
+                            row_parts.append(f"{value:.1f}")
+                        else:
+                            row_parts.append("NA")
+                    else:
+                        row_parts.append("NA")
+                
+                latex_content.append(" & ".join(row_parts) + " \\\\")
+                row_count += 1
         
         if dataset != datasets[-1]:
-            latex_content.append("\\hline")
+            latex_content.append("\\midrule")
     
-    latex_content.append("\\hline")
+    latex_content.append("\\bottomrule")
     latex_content.append("\\end{tabular}")
-    latex_content.append("}%")
     
-    caption = "iDLG Attack Fidelity Percentages by Dataset, Attack Method, and $|\\mathcal{F}_{HE}|$. "
-    caption += "Fidelity measures the percentage of test samples that can be reconstructed with MSE below a given threshold (0.01 or 0.0001). "
+    caption = "iDLG Attack Fidelity Percentages by Dataset, Attack Method, Fidelity Threshold, and $|\\mathcal{F}_{HE}|$. "
+    caption += "Fidelity measures the percentage of test samples that can be reconstructed with MSE below a given threshold. "
     caption += "Higher percentages indicate more successful attacks. "
-    caption += "\\textbf{Cheat}: initialization with ground truth data (theoretical maximum recovery); "
+    caption += "\\textbf{Oracle}: initialization with ground truth data (establishes upper bound); "
     caption += "\\textbf{Zero}: initialization with all zeros (common attack scenario); "
     caption += "\\textbf{Random}: initialization with random values (another common attack scenario). "
-    caption += "$|\\mathcal{F}_{HE}|$ controls the number of features selected via PCA to be encypted."
+    caption += "$|\\mathcal{F}_{HE}|$ controls the number of features selected via PCA to be encrypted."
     
     latex_content.append(f"\\caption{{{caption}}}")
     latex_content.append("\\label{tab:fidelity_combined}")
-    latex_content.append("\\end{table}")
     
     return "\n".join(latex_content)
 
@@ -195,6 +213,8 @@ def main():
     
     latex_table = generate_latex_table(organized_data)
     
+    full_table = "\\begin{table}[htbp]\n\\centering\n" + latex_table + "\n\\end{table}"
+    
     output_dir = os.path.join(project_root, "output", "tables")
     os.makedirs(output_dir, exist_ok=True)
     
@@ -203,7 +223,7 @@ def main():
         output_file = os.path.join(output_dir, "exp1_table.tex")
     
     with open(output_file, 'w') as f:
-        f.write(latex_table)
+        f.write(full_table)
     
     print(f"LaTeX table saved to {output_file}")
     

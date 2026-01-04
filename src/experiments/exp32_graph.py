@@ -48,9 +48,7 @@ def extract_params_from_command(cmd):
         params['fusion'] = int(fusion_match.group(1))
     else:
         dataset_val = params.get('dataset')
-        if dataset_val == 'bco':
-            params['fusion'] = 9
-        elif dataset_val == 'bcd':
+        if dataset_val == 'bcd':
             params['fusion'] = 30
         elif dataset_val == 'synth':
             if 'n_synth_features' in params:
@@ -135,6 +133,10 @@ def organize_data(data):
     return processed_data
 
 def create_fhe_vs_time_plot(processed_data, output_dir):
+    title_size = 18
+    label_size = 16
+    tick_size = 13
+    legend_size = 12
     plt.figure(figsize=(10, 6))
     
     layer_groups = defaultdict(list)
@@ -164,17 +166,25 @@ def create_fhe_vs_time_plot(processed_data, output_dir):
         else:
             label = f'{n_layers} Hidden Layers'
         
-        plt.plot(fusions, times, label=label, 
-                marker=marker, color=color, linewidth=2.5, markersize=8)
+        plt.plot(
+            fusions,
+            times,
+            label=label,
+            marker=marker,
+            color=color,
+            linewidth=2.5,
+            markersize=8
+        )
     
     plt.xscale('log', base=2)
     all_fusions = sorted(set(e['fusion'] for e in processed_data))
-    plt.xticks(all_fusions, all_fusions)
+    plt.xticks(all_fusions, all_fusions, fontsize=tick_size)
+    plt.yticks(fontsize=tick_size)
     
-    plt.xlabel('Number of Encrypted Features ($F_{HE}$)', fontsize=12)
-    plt.ylabel('Training Time (seconds)', fontsize=12)
-    plt.title('Training Time vs Number of Encrypted Features for Different Network Architectures', fontsize=14)
-    plt.legend(fontsize=8)
+    plt.xlabel('Number of Encrypted Features ($F_{HE}$)', fontsize=label_size)
+    plt.ylabel('Training Time (seconds)', fontsize=label_size)
+    plt.title('Training Time vs Number of Encrypted Features for Different Network Architectures', fontsize=title_size)
+    plt.legend(fontsize=legend_size)
     plt.grid(True, alpha=0.3, which='both')
     plt.tight_layout()
     

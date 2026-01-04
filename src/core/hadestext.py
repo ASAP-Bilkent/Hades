@@ -5,7 +5,6 @@ from src.core.utils import *
 class HadesText():
     ckks_context = None
     VERBOSE = 0
-    FAKE = False
 
     @classmethod
     def set_ckks_context(cls, context):
@@ -15,9 +14,6 @@ class HadesText():
     def set_verbosity(cls, verbose):
         cls.VERBOSE = verbose
 
-    @classmethod
-    def set_fake(cls, fake):
-        cls.FAKE = fake
 
     @count_calls
     @profile
@@ -468,16 +464,13 @@ class HadesText():
     def apply_bootstrapping_if_needed(self):
         if self._cipher_data is None:
             return
-        if self.ckks_context.depth - self._cipher_data.GetLevel() <= 20:
-            return self.apply_bootstrapping()
-        else:
-            return
+        return self.apply_bootstrapping()
         
     @count_calls
     def apply_bootstrapping(self):
         with timer_context('Bootstrap'):
-            if HadesText.FAKE:
-                self.__class__.verbose_print(f"Faking Bootstrap", 1)
+            if HadesText.VERBOSE > 2:
+                self.__class__.verbose_print(f"Simulation mode: Bootstrap", 1)
                 result = HadesText.ckks_context.cc.Decrypt(HadesText.ckks_context.keys.secretKey, self.cipher_data)
                 result.SetLength(self.valid_len)
                 result = np.array(result.GetRealPackedValue())
@@ -485,10 +478,36 @@ class HadesText():
                 result = HadesText.ckks_context.cc.Encrypt(HadesText.ckks_context.keys.publicKey, result)
                 self._cipher_data = result
             else:
-                num_itertations = 1
-                precision = 17
-                bootstrapped_cipher_data = self.ckks_context.cc.EvalBootstrap(self._cipher_data, num_itertations, precision)
-                self._cipher_data = bootstrapped_cipher_data
+                if self.ckks_context.n_clients > 1:
+                    inCtxt = self.ckks_context.cc.IntMPBootAdjustScale(self._cipher_data)
+                    
+                    a = self.ckks_context.cc.IntMPBootRandomElementGen(self.ckks_context.parties[0].publicKey)
+                    
+                    c1 = inCtxt.Clone()
+                    c1.RemoveElement(0)
+                    
+                    sharePairVec = []
+                    for i in range(self.ckks_context.n_clients):
+                        sharesPair = self.ckks_context.cc.IntMPBootDecrypt(
+                            self.ckks_context.parties[i].secretKey, 
+                            c1, 
+                            a
+                        )
+                        sharePairVec.append(sharesPair)
+                    
+                    aggregatedSharesPair = self.ckks_context.cc.IntMPBootAdd(sharePairVec)
+                    bootstrapped_cipher_data = self.ckks_context.cc.IntMPBootEncrypt(
+                        self.ckks_context.keys.publicKey,
+                        aggregatedSharesPair,
+                        a,
+                        inCtxt
+                    )
+                    self._cipher_data = bootstrapped_cipher_data
+                else:
+                    num_itertations = 1
+                    precision = 17
+                    bootstrapped_cipher_data = self.ckks_context.cc.EvalBootstrap(self._cipher_data, num_itertations, precision)
+                    self._cipher_data = bootstrapped_cipher_data
     
     ######################################################################
     # Utils
@@ -557,7 +576,8 @@ class HadesText():
 
         if direction == "left" and clean:
             mask = HadesText(result.validation_mask.reshape(1, -1))
-            mask._pad_data("row", 1, len(mask.data))
+            mask.padded_data = mask.data.flatten(order="C")
+            mask.validation_mask = np.ones_like(mask.padded_data)
 
             result = result.mult(mask, "CP")
 

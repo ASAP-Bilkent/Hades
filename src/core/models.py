@@ -3,6 +3,7 @@ import time
 import json
 import sys
 import os
+import copy
 
 from src.core.encryption import CKKSContext
 from src.core.hadestext import HadesText
@@ -13,7 +14,7 @@ from src.core.utils import *
 class BaseModel:
     def __init__(self, args):
         self.args = args
-        self.learning_rate = args.learning_rate
+        self.learning_rate = args.lrate
         self.batch_size = args.batch_size
         self.losses_per = []
         self.eval_mode = False
@@ -30,22 +31,63 @@ class BaseModel:
         preds1 = activations1[-1]
         preds2 = activations2[-1]
         
-        if isinstance(preds2, HadesText):  # HE fusion
-            preds2_decrypted = preds2._return_decrypted()[:preds1.shape[-1]]
-            fused_preds = (preds1 + preds2_decrypted) / 2
-        else:  # Non-HE fusion
-            fused_preds = (preds1 + preds2) / 2
-        
-        batch_loss = np.mean(fused_preds - batch_y)
+        alpha = self.args.fusion_alpha
+        if self.args.loss_enc:
+            def plain_loss_enc_calc(preds1, preds2):
+                grad1 = (preds1 - batch_y) / batch_y.size
+                preds1_u = preds1 - 2 * batch_y
+                numer = self.args.fusion_alpha * preds2 + (1 - self.args.fusion_alpha) * preds1_u
+                denom = 1 / (1 * batch_y.size)
+                grad2 = numer * denom
+                
+                batch_loss = np.mean(grad2)
+                fused_preds = (1 - alpha) * preds1 + alpha * preds2
 
-        grad_loss = (fused_preds - batch_y) / batch_y.size
-        
-        if hasattr(preds2, 'validation_mask'):
-            grad2 = HadesText(grad_loss, mask=preds2.validation_mask)
-            grad2._pad_data(pad_step=len(preds2.validation_mask) // self.batch_size)
+                return grad1, grad2, batch_loss, fused_preds
+
+            if isinstance(preds2, HadesText):  # HE fusion
+                _, _, batch_loss_pt, _ = plain_loss_enc_calc(preds1, np.array(preds2._return_decrypted()[:preds1.shape[-1]]))
+
+                grad1 = (preds1 - batch_y) / batch_y.size
+                preds1_u = preds1 - 2 * batch_y
+                preds1_u = (1 - self.args.fusion_alpha) * preds1_u
+                
+                preds1_u = HadesText(preds1_u, mask=preds2.validation_mask)
+                preds1_u._pad_data(pad_step=len(preds2.validation_mask) // self.batch_size)
+
+
+                fusion_alpha_scale = HadesText(self.args.fusion_alpha)
+                numer = preds2.mult(fusion_alpha_scale, "CD")
+                numer = numer.add(preds1_u, "CP")
+                denom = HadesText(1 / (1 * batch_y.size))
+
+                grad2 = numer.mult(denom, "CD")
+
+                batch_loss = np.mean(grad2._return_decrypted()[:preds1.shape[-1]])
+                preds2_decrypted = np.array(preds2._return_decrypted()[:preds1.shape[-1]])
+                fused_preds = (1 - alpha) * preds1 + alpha * preds2_decrypted
+
+            else:
+                grad1, grad2, batch_loss, fused_preds = plain_loss_enc_calc(preds1, preds2)
+                
         else:
-            grad2 = grad_loss
-        grad1 = grad_loss
+            if isinstance(preds2, HadesText):  # HE fusion
+                preds2_decrypted = np.array(preds2._return_decrypted()[:preds1.shape[-1]])
+                fused_preds = (1 - alpha) * preds1 + alpha * preds2_decrypted
+            else:  # Non-HE fusion
+                fused_preds = (1 - alpha) * preds1 + alpha * preds2
+            
+            batch_loss = np.mean(fused_preds - batch_y)
+
+            grad_loss = (fused_preds - batch_y) / batch_y.size
+            grad_loss_per_network = grad_loss# / 2
+            
+            if hasattr(preds2, 'validation_mask'):
+                grad2 = HadesText(grad_loss_per_network, mask=preds2.validation_mask)
+                grad2._pad_data(pad_step=len(preds2.validation_mask) // self.batch_size)
+            else:
+                grad2 = grad_loss_per_network
+            grad1 = grad_loss_per_network
 
         activations1[-1] = grad1
         activations2[-1] = grad2
@@ -112,13 +154,18 @@ class BaseModel:
     def eval(self):
         self.eval_mode = True
 
+    def train(self):
+        self.eval_mode = False
+
 class HENetwork(BaseModel):
-    def __init__(self, dims, args):
+    def __init__(self, dims, args, network_label=None):
         super().__init__(args)
         np.random.seed(42)
+        self.network_label = network_label
 
         self.batch_size = args.batch_size
-        self.learning_rate = args.learning_rate
+        self.learning_rate = args.lrate
+        self.momentum = getattr(args, 'mom', 0.0)
 
         self.dim_slots = []
         for i in range(len(dims)):
@@ -129,7 +176,6 @@ class HENetwork(BaseModel):
             print("Dim slots and bs:", dim_slots_and_bs)
 
         HadesText.set_verbosity(args.verbosity)
-        HadesText.set_fake(args.fake)
 
         self.dims = dims
 
@@ -144,7 +190,17 @@ class HENetwork(BaseModel):
         activation = Activation(args, enc=True)
         self.layers = []
         for i in range(len(dims) - 1):
-            self.layers.append(LayerHE(i + 1, dims, self.dim_slots, self.max_slot_size, self.slot_multipliers, activation, self.args.learning_rate, getattr(self.args, 'nest', False)))
+            self.layers.append(LayerHE(
+                i + 1,
+                dims,
+                self.dim_slots,
+                self.max_slot_size,
+                self.slot_multipliers,
+                activation,
+                self.args.lrate,
+                momentum=self.momentum,
+                network_label=self.network_label
+            ))
         
         self.cur_data_batch_size = None
         self.ciphertext_size = None
@@ -194,61 +250,45 @@ class HENetwork(BaseModel):
         HadesText.verbose_print(f"{'-' * 50}Calculating loss{'-' * 50}", 1)
         error = self.get_error(activations, targets)
 
-        #error = error.mult(error) # Bx1
-        if self.args.fake_loss:
-            preds = activations[-1]
-            loss_divided = np.mean((preds.data - targets) ** 2)
+        preds = activations[-1]
+        loss_divided = np.mean((preds.data - targets) ** 2)
+
+        if len(self.dim_slots) % 2 == 0:
+            errorRotated = error._rotate_ciphertext("left", self.max_slot_size // self.dim_slots[-1], self.dim_slots[-1], clean=False)
         else:
-            #error = error.mult(error) # Bx1
-            #error.dump_info("sError")
+            errorRotated = error._rotate_ciphertext("left", 1, self.dim_slots[-1], clean=False)
 
-            #error.data = error.data**2
-            #HadesText.verbose_print(f"squared_errors_nonenc:{error.data}", 1)
+        errorRotated.dump_info("sErrorScalar")
+        
+        divider = HadesText(1 / (self.cur_data_batch_size * self.dim_slots[-1]))
+        loss_divided = errorRotated.mult(divider, "CD")
+        loss_divided.dump_info("loss_divided")
+        loss_divided.data = np.mean(loss_divided.data)
 
-            if len(self.dim_slots) % 2 == 0:
-                errorRotated = error._rotate_ciphertext("left", self.max_slot_size // self.dim_slots[-1], self.dim_slots[-1], clean=False)
-            else:
-                errorRotated = error._rotate_ciphertext("left", 1, self.dim_slots[-1], clean=False)
+        if self.cur_data_batch_size > 1:
+            loss_divided = loss_divided._rotate_ciphertext("left", self.max_slot_size, self.cur_data_batch_size, clean=False)
+            loss_divided.dump_info("loss_divided_summed")
 
-            errorRotated.dump_info("sErrorScalar")
-            
-            divider = HadesText(1 / (self.cur_data_batch_size * self.dim_slots[-1]))
-            loss_divided = errorRotated.mult(divider, "CD")
-            loss_divided.dump_info("loss_divided")
-            loss_divided.data = np.mean(loss_divided.data)
-
-            if self.cur_data_batch_size > 1:
-                loss_divided = loss_divided._rotate_ciphertext("left", self.max_slot_size, self.cur_data_batch_size, clean=False)
-                loss_divided.dump_info("loss_divided_summed")
-
-            HadesText.verbose_print(f"loss_nonenc:{loss_divided.data}", 1)
-            
-            #if self.args.test is not None:
-            if self.args.data_amount != -1:
-                print(loss_divided.data, loss_divided.padded_data[0])
-            if not np.isclose(loss_divided.data, loss_divided.padded_data[0], atol=1e-5):
-                print("Result mismatch")
+        HadesText.verbose_print(f"loss_nonenc:{loss_divided.data}", 1)
 
         return error, loss_divided
 
     def mse_loss_grad(self, error, activations, targets):
         HadesText.verbose_print(f"{'-' * 50}Calculating loss grad{'-' * 50}", 1)
         z = activations
-        #error = self.get_error(z, targets)
 
-        #divider = HadesText(2 / (self.cur_data_batch_size * self.dim_slots[-1]))
         divider = HadesText(1 / (self.cur_data_batch_size * self.dim_slots[-1]))
         grad = error.mult(divider, "CD") # Bx1 (2ceil(N*B)x1 cipher)
         grad.dump_info("grad")
 
-        #grad.data = 2 * error.data / targets.size
-        grad.data = error.data / targets.size
+        normalization_factor = self.cur_data_batch_size * self.dim_slots[-1]
+        grad.data = error.data / normalization_factor
         HadesText.verbose_print(f"grad_nonenc:{grad.data}", 1)
         
         z[-1] = grad
         return z
 
-    def backward(self, X, g): 
+    def backward(self, X, g):
         z = g
         g = z[-1]
         gradients = []
@@ -266,14 +306,24 @@ class HENetwork(BaseModel):
         return list(reversed(gradients))
 
     def add_loss(self, current_loss, new_loss):
+        if isinstance(current_loss, HadesText) or isinstance(new_loss, HadesText):
+            if isinstance(current_loss, HadesText) and isinstance(new_loss, HadesText):
+                return current_loss.add(new_loss, "CC")
+            elif isinstance(current_loss, HadesText):
+                new_loss_ht = HadesText(new_loss, mask=current_loss.validation_mask)
+                if hasattr(self, 'cur_data_batch_size') and self.cur_data_batch_size > 0:
+                    new_loss_ht._pad_data(pad_step=len(current_loss.validation_mask) // self.cur_data_batch_size)
+                return current_loss.add(new_loss_ht, "CP")
+            else:
+                current_loss_ht = HadesText(current_loss, mask=new_loss.validation_mask)
+                if hasattr(self, 'cur_data_batch_size') and self.cur_data_batch_size > 0:
+                    current_loss_ht._pad_data(pad_step=len(new_loss.validation_mask) // self.cur_data_batch_size)
+                return current_loss_ht.add(new_loss, "PC")
         return current_loss + new_loss
 
     def finalize_loss(self, total_loss, num_batches):
-        if self.args.fake_loss:
-            return total_loss / num_batches
-        else:
-            total_loss.dump_info("total_loss")
-            return total_loss.padded_data[0] / num_batches
+        total_loss.dump_info("total_loss")
+        return total_loss.padded_data[0] / num_batches
     
     def get_gradients(self):
         gradients = []
@@ -288,21 +338,30 @@ class HENetwork(BaseModel):
             layer.dW = gradient
 
 class Network(BaseModel):
-    def __init__(self, dims, args):
+    def __init__(self, dims, args, network_label=None):
         super().__init__(args)
         np.random.seed(42)
+        self.network_label = network_label
         activation = Activation(args, enc=False)
-        self.layers = [Layer(activation, dims[i], dims[i + 1], getattr(args, 'nest', False)) for i in range(len(dims) - 1)]
-        self.learning_rate = args.learning_rate
+        self.momentum = getattr(args, 'mom', 0.0)
+        self.layers = [
+            Layer(
+                activation,
+                dims[i],
+                dims[i + 1],
+                network_label=self.network_label,
+                momentum=self.momentum,
+                layer_rank=i
+            ) for i in range(len(dims) - 1)
+        ]
+        self.learning_rate = args.lrate
         self.batch_size = args.batch_size
 
     def forward(self, X):
         activations = [X]  # Include input X in activations
         for i, layer in enumerate(self.layers):
-            if i == len(self.layers) - 1:
-                X = layer.forward(X, apply_activation=False)
-            else:
-                X = layer.forward(X)
+            apply_activation = i != len(self.layers) - 1
+            X = layer.forward(X, apply_activation=apply_activation)
             activations.append(X)
         return activations  # Return all activations including input
 
@@ -312,20 +371,22 @@ class Network(BaseModel):
         
         for i in reversed(range(len(self.layers))):
             input_activation = activations[i]
-            if i == len(self.layers) - 1:
-                grad_loss, dW = self.layers[i].backward(grad_loss, input_activation, self.learning_rate, apply_activation=False, update_weight=not self.eval_mode)
-            else:
-                grad_loss, dW = self.layers[i].backward(grad_loss, input_activation, self.learning_rate, update_weight=not self.eval_mode)
+            apply_activation = i != len(self.layers) - 1
+            grad_loss, dW = self.layers[i].backward(
+                grad_loss,
+                input_activation,
+                self.learning_rate,
+                apply_activation=apply_activation,
+                update_weight=not self.eval_mode
+            )
             gradients.append(dW)
         return list(reversed(gradients))
 
     def mse_loss(self, activations, targets):
-        #return np.mean((activations[-1] - targets) ** 2)
         return activations[-1] - targets, np.mean((activations[-1] - targets))
 
     def mse_loss_grad(self, error, activations, targets):
         z = activations.copy()
-        #grad = (2 / targets.size) * (activations[-1] - targets)
         grad = (1 / targets.size) * (error)
         z[-1] = grad
         return z
@@ -349,8 +410,16 @@ class Network(BaseModel):
 class BaseFusionNetwork(BaseModel):
     def __init__(self, args, dims_one, dims_two):
         super().__init__(args)
-        self.network_one = Network(dims_one, args)
-        self.network_two = Network(dims_two, args)
+        args_one = args
+        act_func = getattr(args, 'act_func', None)
+        if getattr(args, 'fus_act_real', False) and isinstance(act_func, str) and act_func.startswith('approx_'):
+            args_one = copy.copy(args)
+            if act_func == 'approx_sigmoid_ls':
+                args_one.act_func = 'sigmoid'
+            else:
+                args_one.act_func = act_func.replace('approx_', '', 1)
+        self.network_one = Network(dims_one, args_one, network_label="PT")
+        self.network_two = Network(dims_two, args, network_label="CT")
 
     def forward(self, X_one, X_two):
         activations_one = self.network_one.forward(X_one)
@@ -389,13 +458,22 @@ class BaseFusionNetwork(BaseModel):
         self.network_one.eval()
         self.network_two.eval()
 
+    def train(self):
+        super().train()
+        self.network_one.train()
+        self.network_two.train()
+
 class FusionNetwork(BaseFusionNetwork):
     def __init__(self, args, dims_one, dims_two):
         super().__init__(args, dims_one, dims_two)
-        self.network_two = HENetwork(dims_two, args) # Replace network_two with HENetwork
+        self.args = args
+        self.network_two = HENetwork(dims_two, args, network_label="CT") # Replace network_two with HENetwork
 
     def finalize_loss(self, total_loss, num_batches):
-        return total_loss / num_batches
+        if self.args.loss_enc:
+            return total_loss[0] / num_batches
+        else:
+            return total_loss / num_batches
     
     def add_loss(self, current_loss, new_loss):
         return current_loss + new_loss

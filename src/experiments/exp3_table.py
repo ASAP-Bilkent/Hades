@@ -12,7 +12,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(script_dir, "../.."))
 
 def extract_timestamp(filename):
-    """Extract timestamp from filename"""
+    
     match = re.search(r'exp\d+-(\d{10,12})\.json$', os.path.basename(filename))
     if match:
         timestamp_str = match.group(1)
@@ -24,7 +24,7 @@ def extract_timestamp(filename):
     return datetime.fromtimestamp(os.path.getmtime(filename))
 
 def format_filename(file_path):
-    """Format the filename for display"""
+    
     filename = os.path.basename(file_path)
     match = re.search(r'(exp\d+)-(\d{2})(\d{2})(\d{4})(\d{2})(\d{2})\.json$', filename)
     if match:
@@ -33,7 +33,7 @@ def format_filename(file_path):
     return filename
 
 def extract_params_from_command(cmd):
-    """Extract parameters from command string"""
+    
     params = {}
     
     dataset_match = re.search(r'--dataset=(\w+)', cmd)
@@ -49,9 +49,7 @@ def extract_params_from_command(cmd):
         params['fusion'] = int(fusion_match.group(1))
     else:
         dataset_val = params.get('dataset')
-        if dataset_val == 'bco':
-            params['fusion'] = 9
-        elif dataset_val == 'bcd':
+        if dataset_val == 'bcd':
             params['fusion'] = 30
         elif dataset_val == 'synth':
             if 'n_synth_features' in params:
@@ -82,7 +80,7 @@ def extract_params_from_command(cmd):
     return params
 
 def generate_latex_table(data):
-    """Generate a compact LaTeX table from the data"""
+    
     
     grouped_experiments = defaultdict(lambda: {'times': [], 'params_cache': None})
 
@@ -226,73 +224,53 @@ def generate_latex_table(data):
     latex = "\\begin{table}[htbp]\n\\centering\n\\caption{Total Training Time (seconds)}\n"
     
     if multiple_clients:
-        latex += "\\begin{tabular}{cccc|ccc}\n"
-        latex += "\\hline\n"
-        latex += "\\multicolumn{4}{c|}{BCO} & \\multicolumn{3}{c}{BCD} \\\\\n"
-        latex += "\\hline\n"
-        latex += "Clients & Fusion & Dims & Time(s) & Clients & Dims & Time(s) \\\\\n"
-        latex += "\\hline\n"
+        latex += "\\begin{tabular}{ccc}\\n"
+        latex += "\\hline\\n"
+        latex += "Clients & Fusion & Time(s) \\\\\n"
+        latex += "\\hline\\n"
         
         def process_dataset_entries(dataset, entries, with_dims=False):
             rows = []
             for entry in entries:
                 row = []
                 time_str = f"{entry['time']:.2f}" if entry['std'] == 0 else f"{entry['time']:.2f} \\pm {entry['std']:.2f}"
-                if dataset == 'bco':
-                    if with_dims:
-                        row.extend([str(entry['n_clients']), str(entry['fusion']), str(entry['dims']), time_str, "", "", ""])
-                    else:
-                        row.extend([str(entry['n_clients']), str(entry['fusion']), "-", time_str, "", "", ""])
+                if with_dims:
+                    row.extend([str(entry['n_clients']), str(entry['dims']), time_str])
                 else:
-                    if with_dims:
-                        row.extend(["", "", "", "", str(entry['n_clients']), str(entry['dims']), time_str])
-                    else:
-                        row.extend(["", "", "", "", str(entry['n_clients']), "-", time_str])
+                    row.extend([str(entry['n_clients']), "-", time_str])
                 rows.append(" & ".join(row) + " \\\\\n")
             return rows
         
-        for dataset in ['bco', 'bcd']:
-            entries = [e for e in dataset_data[dataset] if e['dims'] is None]
-            rows = process_dataset_entries(dataset, entries, with_dims=False)
-            latex += "".join(rows)
+        dataset = 'bcd'
+        entries = [e for e in dataset_data[dataset] if e['dims'] is None]
+        rows = process_dataset_entries(dataset, entries, with_dims=False)
+        latex += "".join(rows)
         
-        latex += "\\hline\n"
+        latex += "\\hline\\n"
         
-        for dataset in ['bco', 'bcd']:
-            entries = [e for e in dataset_data[dataset] if e['dims'] is not None]
-            rows = process_dataset_entries(dataset, entries, with_dims=True)
-            latex += "".join(rows)
+        entries = [e for e in dataset_data[dataset] if e['dims'] is not None]
+        rows = process_dataset_entries(dataset, entries, with_dims=True)
+        latex += "".join(rows)
     else:
-        latex += "\\begin{tabular}{ccc|cc}\n"
-        latex += "\\hline\n"
-        latex += "\\multicolumn{3}{c|}{BCO} & \\multicolumn{2}{c}{BCD} \\\\\n"
-        latex += "\\hline\n"
-        latex += "Fusion & Dims & Time(s) & Dims & Time(s) \\\\\n"
-        latex += "\\hline\n"
+        latex += "\\begin{tabular}{cc}\\n"
+        latex += "\\hline\\n"
+        latex += "Fusion & Time(s) \\\\\n"
+        latex += "\\hline\\n"
         
-        for dataset in ['bco', 'bcd']:
-            entries = [e for e in dataset_data[dataset] if e['dims'] is None]
-            for entry in entries:
-                row = []
-                time_str = f"{entry['time']:.2f}" if entry['std'] == 0 else f"{entry['time']:.2f} \\pm {entry['std']:.2f}"
-                if dataset == 'bco':
-                    row.extend([str(entry['fusion']), "-", time_str, "", ""])
-                else:
-                    row.extend(["", "", "", "-", time_str])
-                latex += " & ".join(row) + " \\\\\n"
+        dataset = 'bcd'
+        entries = [e for e in dataset_data[dataset] if e['dims'] is None]
+        for entry in entries:
+            time_str = f"{entry['time']:.2f}" if entry['std'] == 0 else f"{entry['time']:.2f} \\pm {entry['std']:.2f}"
+            row = [str(entry['fusion']), time_str]
+            latex += " & ".join(row) + " \\\\\n"
         
-        latex += "\\hline\n"
+        latex += "\\hline\\n"
         
-        for dataset in ['bco', 'bcd']:
-            entries = [e for e in dataset_data[dataset] if e['dims'] is not None]
-            for entry in entries:
-                row = []
-                time_str = f"{entry['time']:.2f}" if entry['std'] == 0 else f"{entry['time']:.2f} \\pm {entry['std']:.2f}"
-                if dataset == 'bco':
-                    row.extend([str(entry['fusion']), str(entry['dims']), time_str, "", ""])
-                else:
-                    row.extend(["", "", "", str(entry['dims']), time_str])
-                latex += " & ".join(row) + " \\\\\n"
+        entries = [e for e in dataset_data[dataset] if e['dims'] is not None]
+        for entry in entries:
+            time_str = f"{entry['time']:.2f}" if entry['std'] == 0 else f"{entry['time']:.2f} \\pm {entry['std']:.2f}"
+            row = [str(entry['dims']), time_str]
+            latex += " & ".join(row) + " \\\\\n"
     
     latex += "\\hline\n"
     latex += "\\end{tabular}\n"

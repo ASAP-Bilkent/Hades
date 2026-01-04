@@ -10,8 +10,13 @@ from datetime import datetime
 from collections import defaultdict
 
 def parse_cli_args(cmd):
-    """Extract parameters from command string"""
+    
     params = {}
+    dataset_feat = {
+        'bcd': 30,
+        'mnist': 784,
+        'svhn': 3072,
+    }
     
     dataset_match = re.search(r'--dataset=([a-zA-Z0-9]+)', cmd)
     if dataset_match:
@@ -21,29 +26,34 @@ def parse_cli_args(cmd):
     if batch_size_match:
         params['batch_size'] = int(batch_size_match.group(1))
     
-    fusion_match = re.search(r'--fusion=([0-9]+)', cmd)
-    if fusion_match:
-        params['fusion'] = int(fusion_match.group(1))
-    else:
-        if params.get('dataset') == 'bco':
-            params['fusion'] = 9
-        elif params.get('dataset') == 'bcd':
-            params['fusion'] = 30
-        elif params.get('dataset') == 'mnist':
-            params['fusion'] = 784
+    hades_match = re.search(r'--hades=([0-9]+)', cmd)
+    if hades_match:
+        hades_val = int(hades_match.group(1))
+        if hades_val == 0:
+            params['fusion'] = dataset_feat.get(params.get('dataset'))
         else:
-            params['fusion'] = None
+            params['fusion'] = hades_val
+    else:
+        fusion_match = re.search(r'--fusion=([0-9]+)', cmd)
+        if fusion_match:
+            params['fusion'] = int(fusion_match.group(1))
+        else:
+            params['fusion'] = dataset_feat.get(params.get('dataset'))
     
-    dims_match = re.search(r'--dims=([0-9]+)', cmd)
+    dims_match = re.search(r'--dims=([0-9,]+)', cmd)
     if dims_match:
-        params['dims'] = int(dims_match.group(1))
+        dims_str = dims_match.group(1)
+        if "," in dims_str:
+            params['dims'] = dims_str
+        else:
+            params['dims'] = int(dims_str)
     else:
         params['dims'] = None
     
     return params
 
 def extract_timestamp(filename):
-    """Extract timestamp from filename"""
+    
     match = re.search(r'exp\d+-(\d{10,12})\.json$', os.path.basename(filename))
     if match:
         timestamp_str = match.group(1)
@@ -55,7 +65,7 @@ def extract_timestamp(filename):
     return datetime.fromtimestamp(os.path.getmtime(filename))
 
 def format_filename(file_path):
-    """Format the filename for display"""
+    
     filename = os.path.basename(file_path)
     match = re.search(r'(exp\d+)-(\d{2})(\d{2})(\d{4})(\d{2})(\d{2})\.json$', filename)
     if match:
@@ -89,19 +99,30 @@ def process_exp4_data(data):
     return processed
 
 def calculate_gi_load(batch_size):
-    """Calculate GI-Load based on batch size"""
+    
     baseline_batch_size = 16
     if batch_size == baseline_batch_size:
         return "X"
     else:
         return f"{baseline_batch_size // batch_size}X"
 
+def calculate_total_training_time(dataset, batch_size, one_gi_time):
+    dataset_sizes = {
+        'bcd': 390,
+        'mnist': 49000,
+        'svhn': 73250,
+    }
+    base = dataset_sizes.get(dataset)
+    if base is None:
+        return None
+    return base * one_gi_time / batch_size
+
 def generate_latex_table(organized_data):
-    """Generate a LaTeX table from the organized data"""
+    
     dataset_info = {
-        'bco': {'name': 'BCO', 'n_feat': 9},
         'bcd': {'name': 'BCD', 'n_feat': 30},
-        'mnist': {'name': 'MNIST', 'n_feat': 784}
+        'mnist': {'name': 'MNIST', 'n_feat': 784},
+        'svhn': {'name': 'SVHN', 'n_feat': 3072}
     }
     
     latex_content = []
@@ -109,10 +130,10 @@ def generate_latex_table(organized_data):
     latex_content.append("\\centering")
     latex_content.append("\\begin{tabular}{l c c c c c c c}")
     latex_content.append("\\toprule")
-    latex_content.append("Dataset & $n_{\\text{feat}}$ & Hidden Layer Size & Batch Size & $|\\mathcal{F}_{HE}|$ & GI-Load & One-GI (s) & Total Training (s)\\\\")
+    latex_content.append("Dataset & $|\\mathcal{F}|$ & Hidden Layer Size & Batch Size & $|\\mathcal{F}_{HE}|$ & GI-Load & One-GI (s) & Total Training (s)\\\\")
     latex_content.append("\\midrule")
     
-    datasets = ['bco', 'bcd', 'mnist']
+    datasets = ['bcd', 'mnist', 'svhn']
     
     for dataset in datasets:
         if dataset not in organized_data:
@@ -120,31 +141,50 @@ def generate_latex_table(organized_data):
         
         dataset_name = dataset_info[dataset]['name']
         n_feat = dataset_info[dataset]['n_feat']
+
+        data_entries = sorted(
+            organized_data[dataset],
+            key=lambda x: (x['batch_size'], -(x['fusion'] if x['fusion'] is not None else 0))
+        )
+        n_rows = len(data_entries)
+        first_dims = data_entries[0]['dims'] if data_entries else None
+        hidden_layer_value = str(first_dims) if first_dims is not None else "-"
         
-        data_entries = sorted(organized_data[dataset], key=lambda x: x['batch_size'])
-        
-        for entry in data_entries:
+        for row_idx, entry in enumerate(data_entries):
             batch_size = entry['batch_size']
             fusion = entry['fusion']
             dims = entry['dims']
             one_gi_time = entry['one_gi_time']
-            total_training_time = entry['total_training_time']
+            total_training_time = calculate_total_training_time(dataset, batch_size, one_gi_time)
+            if total_training_time is None:
+                total_training_time = entry['total_training_time']
             gi_load = calculate_gi_load(batch_size)
-            
-            hidden_layer_size = str(dims) if dims is not None else "-"
-            
-            latex_content.append(f"{dataset_name} & {n_feat} & {hidden_layer_size} & {batch_size} & {fusion} & {gi_load} & {one_gi_time:.6f} & {total_training_time:.6f}\\\\")
+
+            if row_idx == 0:
+                dataset_cell = f"\\multirow{{{n_rows}}}{{*}}{{{dataset_name}}}" if n_rows > 1 else dataset_name
+                n_feat_cell = f"\\multirow{{{n_rows}}}{{*}}{{{n_feat}}}" if n_rows > 1 else f"{n_feat}"
+                hidden_cell = f"\\multirow{{{n_rows}}}{{*}}{{{hidden_layer_value}}}" if n_rows > 1 else hidden_layer_value
+            else:
+                dataset_cell = ""
+                n_feat_cell = ""
+                hidden_cell = ""
+
+            latex_content.append(f"{dataset_cell} & {n_feat_cell} & {hidden_cell} & {batch_size} & {fusion} & {gi_load} & {one_gi_time:.3f} & {total_training_time:.3f}\\\\")
         
-        if dataset != 'mnist':
+        if dataset != 'svhn':
             latex_content.append("\\hline")
     
     latex_content.append("\\bottomrule")
     latex_content.append("\\end{tabular}")
     
-    caption = "One-GI and Total Training timing analysis for \\textsc{BCO}, \\textsc{BCD}, and \\textsc{MNIST} datasets under different model dimensions, batch sizes, and encrypted feature set ($\\mathcal{F}_{HE}$). "
-    caption += "\\emph{GI-Load} is the number of training iterations required to process a fixed amount of data (baseline~$X$). "
-    caption += "One-GI is the time it takes for a single global iteration of federated training, and Total Training is the per-client total training time, both in seconds. "
-    caption += "To account for GI-Load, we run each configuration for a number of iterations equal to its GI-Load value, using $X = \\frac{100}{16}$."
+    caption = ("One-GI and Total Training timing analysis for \\textsc{BCD}, \\textsc{MNIST}, and "
+               "\\textsc{SVHN} under different batch sizes and encrypted feature set sizes "
+               "($|\\mathcal{F}_{HE}|$). \\emph{GI-Load} denotes the number of global iterations (GI) "
+               "required to process a fixed amount of data (baseline~$X$). \\emph{One-GI} is the "
+               "wall-clock time for a single global iteration, and \\emph{Total Training} is the "
+               "per-client end-to-end training time, both in seconds. For comparability, we run "
+               "configurations with GI-Load $=16X$ for 100 iterations and scale the iteration count "
+               "linearly for smaller loads as $I_{kX}=100\\cdot k/16$ (e.g., $X=100/16$).")
     
     latex_content.append(f"\\caption{{{caption}}}")
     latex_content.append("\\label{tab:gi_dataset}")
